@@ -16,7 +16,7 @@ import abc
 import asyncio
 import random
 import time
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, ClassVar
 
@@ -191,10 +191,18 @@ class BaseProvider(abc.ABC):
         *,
         retry: RetryPolicy | None = None,
         rng: random.Random | None = None,
+        time_left: Callable[[], float] | None = None,
         **params: Any,
     ) -> Completion:
-        """Call the provider, retrying retryable failures with backoff."""
-        retry = retry or RetryPolicy()
+        """Call the provider, retrying retryable failures with backoff.
+
+        Args:
+            time_left: optional callable returning seconds remaining in the
+                caller's overall deadline. A retry is skipped when its backoff
+                would not fit, so a slow provider cannot silently consume a
+                budget the caller meant to share across providers.
+        """
+        retry = retry if retry is not None else RetryPolicy()
         request = self.prepare(messages, self._merged_params(params))
         last: ProviderError | None = None
 
@@ -225,11 +233,12 @@ class BaseProvider(abc.ABC):
 
             if not last.retryable or attempt == retry.max_attempts - 1:
                 raise last
-            time.sleep(
-                retry.delay_for(
-                    attempt, retry_after=getattr(last, "retry_after", None), rng=rng
-                )
+            delay = retry.delay_for(
+                attempt, retry_after=getattr(last, "retry_after", None), rng=rng
             )
+            if not _fits_in_deadline(delay, time_left):
+                raise last
+            time.sleep(delay)
 
         raise last  # pragma: no cover - unreachable
 
@@ -239,10 +248,11 @@ class BaseProvider(abc.ABC):
         *,
         retry: RetryPolicy | None = None,
         rng: random.Random | None = None,
+        time_left: Callable[[], float] | None = None,
         **params: Any,
     ) -> Completion:
         """Async twin of :meth:`complete`."""
-        retry = retry or RetryPolicy()
+        retry = retry if retry is not None else RetryPolicy()
         request = self.prepare(messages, self._merged_params(params))
         last: ProviderError | None = None
 
@@ -273,11 +283,12 @@ class BaseProvider(abc.ABC):
 
             if not last.retryable or attempt == retry.max_attempts - 1:
                 raise last
-            await asyncio.sleep(
-                retry.delay_for(
-                    attempt, retry_after=getattr(last, "retry_after", None), rng=rng
-                )
+            delay = retry.delay_for(
+                attempt, retry_after=getattr(last, "retry_after", None), rng=rng
             )
+            if not _fits_in_deadline(delay, time_left):
+                raise last
+            await asyncio.sleep(delay)
 
         raise last  # pragma: no cover - unreachable
 
@@ -331,6 +342,14 @@ class BaseProvider(abc.ABC):
 
 
 # -- module helpers -------------------------------------------------------
+
+
+def _fits_in_deadline(delay: float, time_left: Callable[[], float] | None) -> bool:
+    """Whether waiting ``delay`` seconds still leaves time to make the call."""
+    if time_left is None:
+        return True
+    remaining = time_left()
+    return remaining > 0 and delay < remaining
 
 
 def _safe_json(response: httpx.Response) -> Any:
