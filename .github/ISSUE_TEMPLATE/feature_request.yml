@@ -1,0 +1,40 @@
+name: Feature request
+description: Propose something this library should do
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        This project stays deliberately small, so the bar is: does this belong in every
+        user's dependency tree? A strong case for "yes" is very welcome.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What are you unable to do today? Please describe the situation, not the solution.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What you would like
+      description: A sketch of the API you would want, if you have one in mind.
+      render: python
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: What you tried instead
+      description: >
+        Workarounds, or another library that solves this. If LiteLLM already does it well,
+        say so — that is useful signal, not a disqualification.
+
+  - type: checkboxes
+    id: scope
+    attributes:
+      label: Scope check
+      options:
+        - label: This is useful to most users, not only to my application
+        - label: I would be willing to open a PR for it

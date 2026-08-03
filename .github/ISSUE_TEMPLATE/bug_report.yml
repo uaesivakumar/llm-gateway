@@ -1,0 +1,53 @@
+name: Bug report
+description: Something behaves differently from what the README promises
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. Please redact your API keys from anything you paste —
+        and if one has already appeared in a log or traceback, rotate it.
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you expected, and what you got instead.
+      placeholder: I expected the gateway to fail over to OpenAI, but it raised instead.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Minimal reproduction
+      description: >
+        The smallest snippet that shows the problem. If you can reproduce it with
+        `httpx.MockTransport` (see `tests/conftest.py`), that is ideal — no keys needed.
+      render: python
+    validations:
+      required: true
+
+  - type: textarea
+    id: attempts
+    attributes:
+      label: Attempt trail
+      description: >
+        `reply.attempts`, or the `AllProvidersFailed` message. This is usually the single
+        most useful thing in the report.
+      render: text
+
+  - type: input
+    id: provider
+    attributes:
+      label: Provider and model
+      placeholder: anthropic / claude-sonnet-4-5
+
+  - type: input
+    id: versions
+    attributes:
+      label: Versions
+      description: llm-gateway, Python and httpx versions.
+      placeholder: llm-gateway 0.1.0, Python 3.12.3, httpx 0.28.1
+    validations:
+      required: true
