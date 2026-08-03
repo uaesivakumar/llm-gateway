@@ -65,6 +65,8 @@ class ScriptedProvider(BaseProvider):
         script: Sequence[Any] | None = None,
         *,
         name: str | None = None,
+        clock: FakeClock | None = None,
+        takes: float = 0.0,
         **kwargs: Any,
     ) -> None:
         super().__init__(model, api_key="test-key", **kwargs)
@@ -72,6 +74,14 @@ class ScriptedProvider(BaseProvider):
             self.name = name
         self.script = list(script or [])
         self.calls = 0
+        # When given a FakeClock, each call advances it by ``takes`` seconds so
+        # deadline behaviour can be tested without real waiting.
+        self._clock = clock
+        self._takes = takes
+
+    def _tick(self) -> None:
+        if self._clock is not None and self._takes:
+            self._clock.advance(self._takes)
 
     def _next(self) -> Any:
         if not self.script:
@@ -97,10 +107,14 @@ class ScriptedProvider(BaseProvider):
         raise AssertionError(f"unsupported script item: {item!r}")
 
     def complete(self, messages, **kwargs: Any) -> Completion:  # type: ignore[override]
-        return self._resolve(self._next())
+        item = self._next()
+        self._tick()
+        return self._resolve(item)
 
     async def acomplete(self, messages, **kwargs: Any) -> Completion:  # type: ignore[override]
-        return self._resolve(self._next())
+        item = self._next()
+        self._tick()
+        return self._resolve(item)
 
     # Abstract members are unused here but must exist.
     def prepare(

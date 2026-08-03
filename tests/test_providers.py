@@ -13,6 +13,7 @@ from llm_gateway.errors import (
     ProviderUnavailable,
     RateLimited,
 )
+from llm_gateway.policy import RetryPolicy
 from llm_gateway.providers import AnthropicProvider, GoogleProvider, OpenAIProvider
 from llm_gateway.types import Message
 
@@ -236,6 +237,40 @@ def test_gives_up_after_max_attempts():
     )
     with pytest.raises(ProviderUnavailable):
         provider.complete(MESSAGES, retry=NO_WAIT)
+    assert calls["n"] == NO_WAIT.max_attempts
+
+
+def test_retry_is_skipped_when_backoff_would_blow_the_deadline():
+    """A 1s backoff must not be taken when only 10ms of budget remains."""
+    calls = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        return httpx.Response(503, json={"error": {"message": "down"}})
+
+    provider = AnthropicProvider(
+        "claude-sonnet-4-5", api_key="k", client=mock_client(handler)
+    )
+    slow_retry = RetryPolicy(max_attempts=5, base_delay=1.0, jitter=0.0)
+
+    with pytest.raises(ProviderUnavailable):
+        provider.complete(MESSAGES, retry=slow_retry, time_left=lambda: 0.01)
+
+    assert calls["n"] == 1, "no retry should be attempted without time for it"
+
+
+def test_retries_proceed_when_the_deadline_is_generous():
+    calls = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        return httpx.Response(503, json={"error": {"message": "down"}})
+
+    provider = AnthropicProvider(
+        "claude-sonnet-4-5", api_key="k", client=mock_client(handler)
+    )
+    with pytest.raises(ProviderUnavailable):
+        provider.complete(MESSAGES, retry=NO_WAIT, time_left=lambda: 300.0)
     assert calls["n"] == NO_WAIT.max_attempts
 
 

@@ -263,6 +263,63 @@ def test_failed_calls_are_not_billed():
     assert len(gateway.ledger) == 1, "only the successful call belongs in the ledger"
 
 
+# -- deadline -------------------------------------------------------------
+
+
+def test_deadline_stops_failover_before_the_next_provider(clock: FakeClock):
+    """Three slow providers must not stack into an unbounded wait."""
+    slow = ScriptedProvider(
+        "m1", [provider_error(ProviderUnavailable)], name="slow",
+        clock=clock, takes=9.0,
+    )
+    never = ScriptedProvider("m2", [completion("too late")], name="never")
+
+    gateway = gw(slow, never, deadline_s=5.0, clock=clock)
+
+    with pytest.raises(AllProvidersFailed) as exc:
+        gateway.complete("hi")
+
+    assert never.calls == 0, "the deadline must stop failover, not just warn"
+    assert exc.value.attempts[-1].error_type == "DeadlineExceeded"
+
+
+def test_deadline_allows_providers_that_fit(clock: FakeClock):
+    quick = ScriptedProvider(
+        "m1", [provider_error(ProviderUnavailable)], name="quick",
+        clock=clock, takes=1.0,
+    )
+    backup = ScriptedProvider("m2", [completion("in time")], name="backup")
+
+    assert gw(quick, backup, deadline_s=5.0, clock=clock).complete("hi").text == "in time"
+
+
+def test_no_deadline_means_no_time_limit(clock: FakeClock):
+    slow = ScriptedProvider(
+        "m1", [provider_error(ProviderUnavailable)], name="slow",
+        clock=clock, takes=600.0,
+    )
+    backup = ScriptedProvider("m2", [completion("eventually")], name="backup")
+
+    assert gw(slow, backup, clock=clock).complete("hi").text == "eventually"
+
+
+def test_deadline_is_per_call_not_per_gateway(clock: FakeClock):
+    """The budget resets on each complete(), it is not a lifetime allowance."""
+    provider = ScriptedProvider(
+        "m", [completion()], name="p", clock=clock, takes=4.0
+    )
+    gateway = gw(provider, deadline_s=5.0, clock=clock)
+    gateway.complete("first")
+    gateway.complete("second")  # would fail if the budget were cumulative
+    assert provider.calls == 2
+
+
+@pytest.mark.parametrize("bad", [0, -1.0])
+def test_invalid_deadline_rejected(bad):
+    with pytest.raises(ValueError):
+        Gateway([ScriptedProvider("m", [completion()])], deadline_s=bad)
+
+
 # -- async ----------------------------------------------------------------
 
 
