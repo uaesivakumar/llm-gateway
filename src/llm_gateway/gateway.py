@@ -44,6 +44,11 @@ class Gateway:
             to opt out of cost estimation entirely.
         failure_threshold: consecutive failures before a provider is cut out.
         cooldown: seconds a cut-out provider stays out before one probe call.
+        deadline_s: overall wall-clock budget for one ``complete()`` call.
+            Checked before each provider and before each retry backoff, so it
+            bounds how long failover can stack up. It does not abort a request
+            already in flight -- that is what each provider's ``timeout`` is
+            for -- so the true worst case is ``deadline_s`` plus one timeout.
         order: ``"declared"`` respects the list order; ``"cheapest"`` sorts by
             the price of a nominal 1k-in / 1k-out call, unpriced providers last.
         on_attempt: optional callback fired for every attempt, success or not.
@@ -60,6 +65,7 @@ class Gateway:
         price_book: PriceBook | None = None,
         failure_threshold: int = 3,
         cooldown: float = 30.0,
+        deadline_s: float | None = None,
         order: Order = "declared",
         clock: Callable[[], float] = time.monotonic,
         on_attempt: Callable[[Attempt], None] | None = None,
@@ -68,6 +74,8 @@ class Gateway:
             raise ValueError("Gateway requires at least one provider")
         if order not in ("declared", "cheapest"):
             raise ValueError(f"unknown order: {order!r}")
+        if deadline_s is not None and deadline_s <= 0:
+            raise ValueError("deadline_s must be positive")
 
         self.providers = tuple(providers)
         # Identity check, not truthiness: an empty Ledger has len() == 0 and is
@@ -77,7 +85,9 @@ class Gateway:
         self.retry = retry if retry is not None else RetryPolicy()
         self.price_book = price_book if price_book is not None else PriceBook.load_default()
         self.order: Order = order
+        self.deadline_s = deadline_s
         self.on_attempt = on_attempt
+        self._clock = clock
         self._breakers: dict[str, CircuitBreaker] = {
             p.key: CircuitBreaker(
                 failure_threshold=failure_threshold, cooldown=cooldown, clock=clock
@@ -122,8 +132,12 @@ class Gateway:
         messages = normalize_messages(prompt)
         self.ledger.check_budget()
         attempts: list[Attempt] = []
+        time_left = self._time_left()
 
         for provider in self._ordered():
+            if self._out_of_time(attempts, provider, time_left):
+                break
+
             breaker = self._breakers[provider.key]
             if not breaker.allow():
                 self._record_attempt(
@@ -137,7 +151,9 @@ class Gateway:
 
             started = time.perf_counter()
             try:
-                completion = provider.complete(messages, retry=self.retry, **params)
+                completion = provider.complete(
+                    messages, retry=self.retry, time_left=time_left, **params
+                )
             except ProviderError as exc:
                 self._on_failure(attempts, provider, breaker, exc, started)
                 continue
@@ -156,8 +172,12 @@ class Gateway:
         messages = normalize_messages(prompt)
         self.ledger.check_budget()
         attempts: list[Attempt] = []
+        time_left = self._time_left()
 
         for provider in self._ordered():
+            if self._out_of_time(attempts, provider, time_left):
+                break
+
             breaker = self._breakers[provider.key]
             if not breaker.allow():
                 self._record_attempt(
@@ -172,7 +192,7 @@ class Gateway:
             started = time.perf_counter()
             try:
                 completion = await provider.acomplete(
-                    messages, retry=self.retry, **params
+                    messages, retry=self.retry, time_left=time_left, **params
                 )
             except ProviderError as exc:
                 self._on_failure(attempts, provider, breaker, exc, started)
@@ -188,6 +208,36 @@ class Gateway:
         raise AllProvidersFailed(tuple(attempts))
 
     # -- internals --------------------------------------------------------
+
+    def _time_left(self) -> Callable[[], float] | None:
+        """Return a closure reporting seconds left in this call's deadline."""
+        if self.deadline_s is None:
+            return None
+        started = self._clock()
+        budget = self.deadline_s
+
+        def remaining() -> float:
+            return budget - (self._clock() - started)
+
+        return remaining
+
+    def _out_of_time(
+        self,
+        attempts: list[Attempt],
+        provider: BaseProvider,
+        time_left: Callable[[], float] | None,
+    ) -> bool:
+        """Record a skipped attempt and stop when the deadline has passed."""
+        if time_left is None or time_left() > 0:
+            return False
+        self._record_attempt(
+            attempts,
+            Attempt(
+                provider.name, provider.model, False, 0.0,
+                "deadline exceeded", "DeadlineExceeded",
+            ),
+        )
+        return True
 
     def _record_attempt(self, attempts: list[Attempt], attempt: Attempt) -> None:
         attempts.append(attempt)

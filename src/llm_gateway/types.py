@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
@@ -124,23 +124,3 @@ class Completion:
     def failed_over(self) -> bool:
         """True when at least one provider failed before this one succeeded."""
         return any(not a.ok for a in self.attempts)
-
-    def with_attempts(self, attempts: Iterable[Attempt]) -> Completion:
-        return Completion(
-            text=self.text,
-            provider=self.provider,
-            model=self.model,
-            usage=self.usage,
-            attempts=tuple(attempts),
-            raw=self.raw,
-        )
-
-    def with_usage(self, usage: Usage) -> Completion:
-        return Completion(
-            text=self.text,
-            provider=self.provider,
-            model=self.model,
-            usage=usage,
-            attempts=self.attempts,
-            raw=self.raw,
-        )
